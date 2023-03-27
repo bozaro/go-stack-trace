@@ -1,0 +1,499 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Artem V. Navrotskiy" <bozaro@yandex.ru>
+Date: Fri, 23 Sep 2022 16:34:53 +0300
+Subject: [PATCH] Allow stacktrace path override for package sources
+
+---
+ docs/go/core/rules.md                   |  9 ++++--
+ go/private/actions/archive.bzl          |  1 +
+ go/private/actions/compilepkg.bzl       |  2 ++
+ go/private/context.bzl                  | 23 ++++++++++++++-
+ go/private/rules/binary.bzl             |  5 ++++
+ go/private/rules/library.bzl            |  5 ++++
+ go/private/rules/nogo.bzl               |  1 +
+ go/private/rules/test.bzl               |  7 +++++
+ go/tools/builders/compilepkg.go         | 34 ++++++++++++++++-----
+ proto/def.bzl                           |  5 ++++
+ tests/core/go_test/BUILD.bazel          | 37 +++++++++++++++++++++++
+ tests/core/go_test/a/stackpath2_test.go | 39 +++++++++++++++++++++++++
+ tests/core/go_test/stackpath_lib.go     |  5 ++++
+ tests/core/go_test/stackpath_test.go    | 37 +++++++++++++++++++++++
+ 14 files changed, 199 insertions(+), 11 deletions(-)
+ create mode 100644 tests/core/go_test/a/stackpath2_test.go
+ create mode 100644 tests/core/go_test/stackpath_lib.go
+ create mode 100644 tests/core/go_test/stackpath_test.go
+
+diff --git a/docs/go/core/rules.md b/docs/go/core/rules.md
+index 039d1da4..d016390f 100644
+--- a/docs/go/core/rules.md
++++ b/docs/go/core/rules.md
+@@ -126,7 +126,7 @@ Rules
+ <pre>
+ go_binary(<a href="#go_binary-name">name</a>, <a href="#go_binary-basename">basename</a>, <a href="#go_binary-cdeps">cdeps</a>, <a href="#go_binary-cgo">cgo</a>, <a href="#go_binary-clinkopts">clinkopts</a>, <a href="#go_binary-copts">copts</a>, <a href="#go_binary-cppopts">cppopts</a>, <a href="#go_binary-cxxopts">cxxopts</a>, <a href="#go_binary-data">data</a>, <a href="#go_binary-deps">deps</a>, <a href="#go_binary-embed">embed</a>,
+           <a href="#go_binary-embedsrcs">embedsrcs</a>, <a href="#go_binary-env">env</a>, <a href="#go_binary-gc_goopts">gc_goopts</a>, <a href="#go_binary-gc_linkopts">gc_linkopts</a>, <a href="#go_binary-goarch">goarch</a>, <a href="#go_binary-goos">goos</a>, <a href="#go_binary-gotags">gotags</a>, <a href="#go_binary-importpath">importpath</a>, <a href="#go_binary-linkmode">linkmode</a>, <a href="#go_binary-msan">msan</a>,
+-          <a href="#go_binary-out">out</a>, <a href="#go_binary-pure">pure</a>, <a href="#go_binary-race">race</a>, <a href="#go_binary-srcs">srcs</a>, <a href="#go_binary-static">static</a>, <a href="#go_binary-x_defs">x_defs</a>)
++          <a href="#go_binary-out">out</a>, <a href="#go_binary-pure">pure</a>, <a href="#go_binary-race">race</a>, <a href="#go_binary-srcs">srcs</a>, <a href="#go_binary-stackpath">stackpath</a>, <a href="#go_binary-static">static</a>, <a href="#go_binary-x_defs">x_defs</a>)
+ </pre>
+ 
+ This builds an executable from a set of source files,
+@@ -171,6 +171,7 @@ This builds an executable from a set of source files,
+ | <a id="go_binary-pure"></a>pure |  Controls whether cgo source code and dependencies are compiled and linked,             similar to setting <code>CGO_ENABLED</code>. May be one of <code>on</code>, <code>off</code>,             or <code>auto</code>. If <code>auto</code>, pure mode is enabled when no C/C++             toolchain is configured or when cross-compiling. It's usually better to             control this on the command line with             <code>--@io_bazel_rules_go//go/config:pure</code>. See [mode attributes], specifically             [pure].   | String | optional | "auto" |
+ | <a id="go_binary-race"></a>race |  Controls whether code is instrumented for race detection. May be one of             <code>on</code>, <code>off</code>, or <code>auto</code>. Not available when cgo is             disabled. In most cases, it's better to control this on the command line with             <code>--@io_bazel_rules_go//go/config:race</code>. See [mode attributes], specifically             [race].   | String | optional | "auto" |
+ | <a id="go_binary-srcs"></a>srcs |  The list of Go source files that are compiled to create the package.             Only <code>.go</code> and <code>.s</code> files are permitted, unless the <code>cgo</code>             attribute is set, in which case,             <code>.c .cc .cpp .cxx .h .hh .hpp .hxx .inc .m .mm</code>             files are also permitted. Files may be filtered at build time             using Go [build constraints].   | <a href="https://bazel.build/concepts/labels">List of labels</a> | optional | [] |
++| <a id="go_binary-stackpath"></a>stackpath |  Stacktrace path for this package sources. By default, this path is relative to rule execution directory.   | String | optional | "" |
+ | <a id="go_binary-static"></a>static |  Controls whether a binary is statically linked. May be one of <code>on</code>,             <code>off</code>, or <code>auto</code>. Not available on all platforms or in all             modes. It's usually better to control this on the command line with             <code>--@io_bazel_rules_go//go/config:static</code>. See [mode attributes],             specifically [static].   | String | optional | "auto" |
+ | <a id="go_binary-x_defs"></a>x_defs |  Map of defines to add to the go link command.             See [Defines and stamping] for examples of how to use these.   | <a href="https://bazel.build/rules/lib/dict">Dictionary: String -> String</a> | optional | {} |
+ 
+@@ -217,7 +218,7 @@ This wraps an executable built by `go_binary` to cross compile it
+ 
+ <pre>
+ go_library(<a href="#go_library-name">name</a>, <a href="#go_library-cdeps">cdeps</a>, <a href="#go_library-cgo">cgo</a>, <a href="#go_library-clinkopts">clinkopts</a>, <a href="#go_library-copts">copts</a>, <a href="#go_library-cppopts">cppopts</a>, <a href="#go_library-cxxopts">cxxopts</a>, <a href="#go_library-data">data</a>, <a href="#go_library-deps">deps</a>, <a href="#go_library-embed">embed</a>, <a href="#go_library-embedsrcs">embedsrcs</a>,
+-           <a href="#go_library-gc_goopts">gc_goopts</a>, <a href="#go_library-importmap">importmap</a>, <a href="#go_library-importpath">importpath</a>, <a href="#go_library-importpath_aliases">importpath_aliases</a>, <a href="#go_library-srcs">srcs</a>, <a href="#go_library-x_defs">x_defs</a>)
++           <a href="#go_library-gc_goopts">gc_goopts</a>, <a href="#go_library-importmap">importmap</a>, <a href="#go_library-importpath">importpath</a>, <a href="#go_library-importpath_aliases">importpath_aliases</a>, <a href="#go_library-srcs">srcs</a>, <a href="#go_library-stackpath">stackpath</a>, <a href="#go_library-x_defs">x_defs</a>)
+ </pre>
+ 
+ This builds a Go library from a set of source files that are all part of
+@@ -253,6 +254,7 @@ This builds a Go library from a set of source files that are all part of
+ | <a id="go_library-importpath"></a>importpath |  The source import path of this library. Other libraries can import this library using this path.             This must either be specified in <code>go_library</code> or inherited from one of the libraries in <code>embed</code>.   | String | optional | "" |
+ | <a id="go_library-importpath_aliases"></a>importpath_aliases |  -   | List of strings | optional | [] |
+ | <a id="go_library-srcs"></a>srcs |  The list of Go source files that are compiled to create the package.             Only <code>.go</code> and <code>.s</code> files are permitted, unless the <code>cgo</code> attribute is set,             in which case, <code>.c .cc .cpp .cxx .h .hh .hpp .hxx .inc .m .mm</code> files are also permitted.             Files may be filtered at build time using Go [build constraints].   | <a href="https://bazel.build/concepts/labels">List of labels</a> | optional | [] |
++| <a id="go_library-stackpath"></a>stackpath |  Stacktrace path for this package sources. By default, this path is relative to rule execution directory.   | String | optional | "" |
+ | <a id="go_library-x_defs"></a>x_defs |  Map of defines to add to the go link command. See [Defines and stamping] for examples of how to use these.   | <a href="https://bazel.build/rules/lib/dict">Dictionary: String -> String</a> | optional | {} |
+ 
+ 
+@@ -333,7 +335,7 @@ This declares a set of source files and related dependencies that can be embedde
+ <pre>
+ go_test(<a href="#go_test-name">name</a>, <a href="#go_test-cdeps">cdeps</a>, <a href="#go_test-cgo">cgo</a>, <a href="#go_test-clinkopts">clinkopts</a>, <a href="#go_test-copts">copts</a>, <a href="#go_test-cppopts">cppopts</a>, <a href="#go_test-cxxopts">cxxopts</a>, <a href="#go_test-data">data</a>, <a href="#go_test-deps">deps</a>, <a href="#go_test-embed">embed</a>, <a href="#go_test-embedsrcs">embedsrcs</a>, <a href="#go_test-env">env</a>,
+         <a href="#go_test-env_inherit">env_inherit</a>, <a href="#go_test-gc_goopts">gc_goopts</a>, <a href="#go_test-gc_linkopts">gc_linkopts</a>, <a href="#go_test-goarch">goarch</a>, <a href="#go_test-goos">goos</a>, <a href="#go_test-gotags">gotags</a>, <a href="#go_test-importpath">importpath</a>, <a href="#go_test-linkmode">linkmode</a>, <a href="#go_test-msan">msan</a>, <a href="#go_test-pure">pure</a>,
+-        <a href="#go_test-race">race</a>, <a href="#go_test-rundir">rundir</a>, <a href="#go_test-srcs">srcs</a>, <a href="#go_test-static">static</a>, <a href="#go_test-x_defs">x_defs</a>)
++        <a href="#go_test-race">race</a>, <a href="#go_test-rundir">rundir</a>, <a href="#go_test-srcs">srcs</a>, <a href="#go_test-stackpath">stackpath</a>, <a href="#go_test-static">static</a>, <a href="#go_test-x_defs">x_defs</a>)
+ </pre>
+ 
+ This builds a set of tests that can be run with `bazel test`.<br><br>
+@@ -397,6 +399,7 @@ This builds a set of tests that can be run with `bazel test`.<br><br>
+ | <a id="go_test-race"></a>race |  Controls whether code is instrumented for race detection. May be one of             <code>on</code>, <code>off</code>, or <code>auto</code>. Not available when cgo is             disabled. In most cases, it's better to control this on the command line with             <code>--@io_bazel_rules_go//go/config:race</code>. See [mode attributes], specifically             [race].   | String | optional | "auto" |
+ | <a id="go_test-rundir"></a>rundir |  A directory to cd to before the test is run.             This should be a path relative to the root directory of the             repository in which the test is defined, which can be the main or an             external repository.<br><br>            The default behaviour is to change to the relative path             corresponding to the test's package, which replicates the normal             behaviour of <code>go test</code> so it is easy to write compatible tests.<br><br>            Setting it to <code>.</code> makes the test behave the normal way for a bazel             test, except that the working directory is always that of the test's             repository, which is not necessarily the main repository.<br><br>            Note: If runfile symlinks are disabled (such as on Windows by             default), the test will run in the working directory set by Bazel,             which is the subdirectory of the runfiles directory corresponding to             the main repository.   | String | optional | "" |
+ | <a id="go_test-srcs"></a>srcs |  The list of Go source files that are compiled to create the package.             Only <code>.go</code> and <code>.s</code> files are permitted, unless the <code>cgo</code>             attribute is set, in which case,             <code>.c .cc .cpp .cxx .h .hh .hpp .hxx .inc .m .mm</code>             files are also permitted. Files may be filtered at build time             using Go [build constraints].   | <a href="https://bazel.build/concepts/labels">List of labels</a> | optional | [] |
++| <a id="go_test-stackpath"></a>stackpath |  Stacktrace path for this package sources. By default, this path is relative to rule execution directory.   | String | optional | "" |
+ | <a id="go_test-static"></a>static |  Controls whether a binary is statically linked. May be one of <code>on</code>,             <code>off</code>, or <code>auto</code>. Not available on all platforms or in all             modes. It's usually better to control this on the command line with             <code>--@io_bazel_rules_go//go/config:static</code>. See [mode attributes],             specifically [static].   | String | optional | "auto" |
+ | <a id="go_test-x_defs"></a>x_defs |  Map of defines to add to the go link command.             See [Defines and stamping] for examples of how to use these.   | <a href="https://bazel.build/rules/lib/dict">Dictionary: String -> String</a> | optional | {} |
+ 
+diff --git a/go/private/actions/archive.bzl b/go/private/actions/archive.bzl
+index a4e737ee..24ff6223 100644
+--- a/go/private/actions/archive.bzl
++++ b/go/private/actions/archive.bzl
+@@ -148,6 +148,7 @@ def emit_archive(go, source = None, _recompile_suffix = "", recompile_internal_d
+         importpath = source.library.importpath,
+         importmap = source.library.importmap,
+         importpath_aliases = source.library.importpath_aliases,
++        stackpath = source.library.stackpath,
+         pathtype = source.library.pathtype,
+ 
+         # GoSource fields
+diff --git a/go/private/actions/compilepkg.bzl b/go/private/actions/compilepkg.bzl
+index 28c32123..236f4043 100644
+--- a/go/private/actions/compilepkg.bzl
++++ b/go/private/actions/compilepkg.bzl
+@@ -102,6 +102,8 @@ def emit_compilepkg(
+     args.add_all(archives, before_each = "-arc", map_each = _archive)
+     if recompile_internal_deps:
+         args.add_all(recompile_internal_deps, before_each = "-recompile_internal_deps")
++    if go.stackpath:
++        args.add("-stackpath", go.stackpath)
+     if importpath:
+         args.add("-importpath", importpath)
+     else:
+diff --git a/go/private/context.bzl b/go/private/context.bzl
+index 222b949b..319d6c84 100644
+--- a/go/private/context.bzl
++++ b/go/private/context.bzl
+@@ -162,12 +162,14 @@ def _tool_args(go):
+     args.set_param_file_format("shell")
+     return args
+ 
+-def _new_library(go, name = None, importpath = None, resolver = None, importable = True, testfilter = None, is_main = False, **kwargs):
++def _new_library(go, name = None, importpath = None, resolver = None, importable = True, testfilter = None, is_main = False, stackpath = None, **kwargs):
+     if not importpath:
+         importpath = go.importpath
+         importmap = go.importmap
+     else:
+         importmap = importpath
++    if not stackpath:
++        stackpath = go.stackpath
+     pathtype = go.pathtype
+     if not importable and pathtype == EXPLICIT_PATH:
+         pathtype = EXPORT_PATH
+@@ -178,6 +180,7 @@ def _new_library(go, name = None, importpath = None, resolver = None, importable
+         importpath = importpath,
+         importmap = importmap,
+         importpath_aliases = go.importpath_aliases,
++        stackpath = stackpath,
+         pathtype = pathtype,
+         resolve = resolver,
+         testfilter = testfilter,
+@@ -378,6 +381,22 @@ def _infer_importpath(ctx):
+         importpath = importpath[1:]
+     return importpath, importpath, INFERRED_PATH
+ 
++def _infer_stackpath(ctx):
++    # Check if paths were explicitly set, either in this rule or in an
++    # embedded rule.
++    attr_stackpath = getattr(ctx.attr, "stackpath", "")
++    if attr_stackpath:
++        return attr_stackpath
++    embed_stackpath = ""
++    for embed in getattr(ctx.attr, "embed", []):
++        if GoLibrary not in embed:
++            continue
++        lib = embed[GoLibrary]
++        if lib.stackpath:
++            embed_stackpath = lib.stackpath
++            break
++    return embed_stackpath
++
+ def go_context(ctx, attr = None):
+     """Returns an API used to build Go code.
+ 
+@@ -485,6 +504,7 @@ def go_context(ctx, attr = None):
+     _check_importpaths(ctx)
+     importpath, importmap, pathtype = _infer_importpath(ctx)
+     importpath_aliases = tuple(getattr(attr, "importpath_aliases", ()))
++    stackpath = _infer_stackpath(ctx)
+ 
+     return struct(
+         # Fields
+@@ -505,6 +525,7 @@ def go_context(ctx, attr = None):
+         importpath = importpath,
+         importmap = importmap,
+         importpath_aliases = importpath_aliases,
++        stackpath = stackpath,
+         pathtype = pathtype,
+         cgo_tools = cgo_tools,
+         nogo = nogo,
+diff --git a/go/private/rules/binary.bzl b/go/private/rules/binary.bzl
+index 91748eda..a0d925e9 100644
+--- a/go/private/rules/binary.bzl
++++ b/go/private/rules/binary.bzl
+@@ -251,6 +251,11 @@ _go_binary_kwargs = {
+             files. This may be inferred from embedded libraries.
+             """,
+         ),
++        "stackpath": attr.string(
++            doc = """
++            Stacktrace path for this package sources. By default, this path is relative to rule execution directory.
++            """,
++        ),
+         "gc_goopts": attr.string_list(
+             doc = """List of flags to add to the Go compilation command when using the gc compiler.
+             Subject to ["Make variable"] substitution and [Bourne shell tokenization].
+diff --git a/go/private/rules/library.bzl b/go/private/rules/library.bzl
+index 6f96c084..cf1de663 100644
+--- a/go/private/rules/library.bzl
++++ b/go/private/rules/library.bzl
+@@ -110,6 +110,11 @@ go_library = rule(
+         ),
+         "importpath_aliases": attr.string_list(
+         ),  # experimental, undocumented
++        "stackpath": attr.string(
++            doc = """
++            Stacktrace path for this package sources. By default, this path is relative to rule execution directory.
++            """,
++        ),
+         "embed": attr.label_list(
+             providers = [GoLibrary],
+             doc = """
+diff --git a/go/private/rules/nogo.bzl b/go/private/rules/nogo.bzl
+index 5102b2d7..06a6b038 100644
+--- a/go/private/rules/nogo.bzl
++++ b/go/private/rules/nogo.bzl
+@@ -66,6 +66,7 @@ def _nogo_impl(ctx):
+         importpath = "nogomain",
+         importmap = "nogomain",
+         importpath_aliases = (),
++        stackpath = None,
+         pathtype = EXPORT_PATH,
+         is_main = True,
+         resolve = None,
+diff --git a/go/private/rules/test.bzl b/go/private/rules/test.bzl
+index 413a19da..edb07b27 100644
+--- a/go/private/rules/test.bzl
++++ b/go/private/rules/test.bzl
+@@ -138,6 +138,7 @@ def _go_test_impl(ctx):
+         importpath = "testmain",
+         importmap = "testmain",
+         importpath_aliases = (),
++        stackpath = go.stackpath,
+         pathtype = INFERRED_PATH,
+         is_main = True,
+         resolve = None,
+@@ -256,6 +257,11 @@ _go_test_kwargs = {
+             files. This may be inferred from embedded libraries.
+             """,
+         ),
++        "stackpath": attr.string(
++            doc = """
++            Stacktrace path for this package sources. By default, this path is relative to rule execution directory.
++            """,
++        ),
+         "gc_goopts": attr.string_list(
+             doc = """List of flags to add to the Go compilation command when using the gc compiler.
+             Subject to ["Make variable"] substitution and [Bourne shell tokenization].
+@@ -653,6 +659,7 @@ def _recompile_external_deps(go, external_source, internal_archive, library_labe
+             importpath = arc_data.importpath,
+             importmap = arc_data.importmap,
+             importpath_aliases = arc_data.importpath_aliases,
++            stackpath = arc_data.stackpath,
+             pathtype = arc_data.pathtype,
+             resolve = None,
+             testfilter = None,
+diff --git a/go/tools/builders/compilepkg.go b/go/tools/builders/compilepkg.go
+index 32f1b7e7..00a8cc98 100644
+--- a/go/tools/builders/compilepkg.go
++++ b/go/tools/builders/compilepkg.go
+@@ -51,7 +51,7 @@ func compilePkg(args []string) error {
+ 	goenv := envFlags(fs)
+ 	var unfilteredSrcs, coverSrcs, embedSrcs, embedLookupDirs, embedRoots, recompileInternalDeps multiFlag
+ 	var deps archiveMultiFlag
+-	var importPath, packagePath, nogoPath, packageListPath, coverMode string
++	var importPath, packagePath, stackPath, nogoPath, packageListPath, coverMode string
+ 	var outPath, outFactsPath, cgoExportHPath string
+ 	var testFilter string
+ 	var gcFlags, asmFlags, cppFlags, cFlags, cxxFlags, objcFlags, objcxxFlags, ldFlags quoteMultiFlag
+@@ -65,6 +65,7 @@ func compilePkg(args []string) error {
+ 	fs.Var(&deps, "arc", "Import path, package path, and file name of a direct dependency, separated by '='")
+ 	fs.StringVar(&importPath, "importpath", "", "The import path of the package being compiled. Not passed to the compiler, but may be displayed in debug data.")
+ 	fs.StringVar(&packagePath, "p", "", "The package path (importmap) of the package being compiled")
++	fs.StringVar(&stackPath, "stackpath", "", "The source code path in stacktrace output")
+ 	fs.Var(&gcFlags, "gcflags", "Go compiler flags")
+ 	fs.Var(&asmFlags, "asmflags", "Go assembler flags")
+ 	fs.Var(&cppFlags, "cppflags", "C preprocessor flags")
+@@ -164,7 +165,8 @@ func compilePkg(args []string) error {
+ 		outFactsPath,
+ 		cgoExportHPath,
+ 		coverFormat,
+-		recompileInternalDeps)
++		recompileInternalDeps,
++		stackPath)
+ }
+ 
+ func compileArchive(
+@@ -195,6 +197,7 @@ func compileArchive(
+ 	cgoExportHPath string,
+ 	coverFormat string,
+ 	recompileInternalDeps []string,
++	stackPath string,
+ ) error {
+ 	workDir, cleanup, err := goenv.workDir()
+ 	if err != nil {
+@@ -340,14 +343,14 @@ func compileArchive(
+ 			return err
+ 		}
+ 
+-		gcFlags = append(gcFlags, createTrimPath(gcFlags, srcDir))
++		gcFlags = append(gcFlags, createTrimPath(gcFlags, srcDir, stackPath, goSrcs))
+ 	} else {
+ 		if cgoExportHPath != "" {
+ 			if err := ioutil.WriteFile(cgoExportHPath, nil, 0o666); err != nil {
+ 				return err
+ 			}
+ 		}
+-		gcFlags = append(gcFlags, createTrimPath(gcFlags, "."))
++		gcFlags = append(gcFlags, createTrimPath(gcFlags, ".", stackPath, goSrcs))
+ 	}
+ 
+ 	// Check that the filtered sources don't import anything outside of
+@@ -600,14 +603,31 @@ func runNogo(ctx context.Context, workDir string, nogoPath string, srcs []string
+ 	return nil
+ }
+ 
+-func createTrimPath(gcFlags []string, path string) string {
++func createTrimPath(gcFlags []string, workDir string, stackPath string, goSrcs []string) string {
++	trimpath := workDir
++
++	if stackPath != "" {
++		var replaces []string
++		prefixSet := make(map[string]struct{})
++		for _, goSrc := range goSrcs {
++			prefix := filepath.ToSlash(filepath.Dir(goSrc))
++			if _, ok := prefixSet[prefix]; ok {
++				continue
++			}
++			prefixSet[prefix] = struct{}{}
++			replaces = append(replaces, prefix+"=>"+stackPath)
++		}
++		sort.Strings(replaces)
++		trimpath = strings.Join(replaces, ";")
++	}
++
+ 	for _, flag := range gcFlags {
+ 		if strings.HasPrefix(flag, "-trimpath=") {
+-			return flag + ":" + path
++			return flag + ":" + trimpath
+ 		}
+ 	}
+ 
+-	return "-trimpath=" + path
++	return "-trimpath=" + trimpath
+ }
+ 
+ func sanitizePathForIdentifier(path string) string {
+diff --git a/proto/def.bzl b/proto/def.bzl
+index 381078ec..e373e56a 100644
+--- a/proto/def.bzl
++++ b/proto/def.bzl
+@@ -168,6 +168,11 @@ go_proto_library = rule(
+         "importpath": attr.string(),
+         "importmap": attr.string(),
+         "importpath_aliases": attr.string_list(),  # experimental, undocumented
++        "stackpath": attr.string(
++            doc = """
++            Stacktrace path for this package sources. By default, this path is relative to rule execution directory.
++            """,
++        ),
+         "embed": attr.label_list(providers = [GoLibrary]),
+         "gc_goopts": attr.string_list(),
+         "compiler": attr.label(providers = [GoProtoCompiler]),
+diff --git a/tests/core/go_test/BUILD.bazel b/tests/core/go_test/BUILD.bazel
+index f6f600d9..254d3dd6 100644
+--- a/tests/core/go_test/BUILD.bazel
++++ b/tests/core/go_test/BUILD.bazel
+@@ -253,3 +253,40 @@ go_bazel_test(
+     name = "binary_env_test",
+     srcs = ["binary_env_test.go"],
+ )
++
++go_library(
++    name = "stackpath_lib",
++    srcs = ["stackpath_lib.go"],
++    importpath = "stackpath_lib",
++    stackpath = "foo",
++)
++
++go_test(
++    name = "stackpath_test",
++    srcs = [
++        "a/stackpath2_test.go",
++        "stackpath_test.go",
++    ],
++    stackpath = "bar",
++    deps = [
++        ":stackpath_lib",
++    ],
++)
++
++go_library(
++    name = "stackpath_test_lib",
++    srcs = [
++        "a/stackpath2_test.go",
++        "stackpath_test.go",
++    ],
++    importpath = "stackpath_test",
++    stackpath = "bar",
++    deps = [
++        ":stackpath_lib",
++    ],
++)
++
++go_test(
++    name = "stackpath_embed_test",
++    embed = [":stackpath_test_lib"],
++)
+diff --git a/tests/core/go_test/a/stackpath2_test.go b/tests/core/go_test/a/stackpath2_test.go
+new file mode 100644
+index 00000000..c8ae9de0
+--- /dev/null
++++ b/tests/core/go_test/a/stackpath2_test.go
+@@ -0,0 +1,39 @@
++package stackpath
++
++import (
++	"runtime/debug"
++	"stackpath_lib"
++	"strings"
++	"testing"
++)
++
++func TestStackPath2(t *testing.T) {
++	stack := stackpath_lib.Wrap(func() string {
++		return string(debug.Stack())
++	})
++	// Stack example:
++	//
++	//	goroutine 6 [running]:
++	//	runtime/debug.Stack()
++	//		GOROOT/src/runtime/debug/stack.go:24 +0x65
++	//	tests/core/go_test/stackpath_test.TestStackPath2.func1(...)
++	//		bar/stackpath2_test.go:12
++	//	stackpath_lib.Wrap(...)
++	//		foo/stackpath_lib.go:4
++	//	tests/core/go_test/stackpath_test.TestStackPath2(0xc00011a680)
++	//		bar/stackpath2_test.go:11 +0x35
++	//	testing.tRunner(0xc00011a680, 0x575e48)
++	//		GOROOT/src/testing/testing.go:1439 +0x102
++	//	created by testing.(*T).Run
++	//		GOROOT/src/testing/testing.go:1486 +0x35f
++
++
++	for _, expected := range []string{
++		"\tbar/stackpath2_test.go:",
++		"\tfoo/stackpath_lib.go:",
++	} {
++		if !strings.Contains(stack, expected) {
++			t.Fatalf("Stacktrace does not contains substring %q", expected)
++		}
++	}
++}
+diff --git a/tests/core/go_test/stackpath_lib.go b/tests/core/go_test/stackpath_lib.go
+new file mode 100644
+index 00000000..3ad4eecc
+--- /dev/null
++++ b/tests/core/go_test/stackpath_lib.go
+@@ -0,0 +1,5 @@
++package stackpath_lib
++
++func Wrap(cb func() string) string {
++	return cb()
++}
+diff --git a/tests/core/go_test/stackpath_test.go b/tests/core/go_test/stackpath_test.go
+new file mode 100644
+index 00000000..4d8868cd
+--- /dev/null
++++ b/tests/core/go_test/stackpath_test.go
+@@ -0,0 +1,37 @@
++package stackpath
++
++import (
++	"runtime/debug"
++	"stackpath_lib"
++	"strings"
++	"testing"
++)
++
++func TestStackPath(t *testing.T) {
++	stack := stackpath_lib.Wrap(func() string {
++		return string(debug.Stack())
++	})
++	// Stack example:
++	//
++	//	goroutine 7 [running]:
++	//	runtime/debug.Stack()
++	//		GOROOT/src/runtime/debug/stack.go:24 +0x65
++	//	tests/core/go_test/stackpath_test.TestStackPath.func1(...)
++	//		bar/stackpath_test.go:12
++	//	stackpath_lib.Wrap(...)
++	//		foo/stackpath_lib.go:4
++	//	tests/core/go_test/stackpath_test.TestStackPath(0xc00009a9c0)
++	//		bar/stackpath_test.go:11 +0x35
++	//	testing.tRunner(0xc00009a9c0, 0x575e50)
++	//		GOROOT/src/testing/testing.go:1439 +0x102
++	//	created by testing.(*T).Run
++	//		GOROOT/src/testing/testing.go:1486 +0x35f
++	for _, expected := range []string{
++		"\tbar/stackpath_test.go:",
++		"\tfoo/stackpath_lib.go:",
++	} {
++		if !strings.Contains(stack, expected) {
++			t.Fatalf("Stacktrace does not contains substring %q", expected)
++		}
++	}
++}

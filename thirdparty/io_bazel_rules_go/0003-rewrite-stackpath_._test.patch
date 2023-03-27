@@ -1,0 +1,327 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Artem V. Navrotskiy" <bozaro@yandex.ru>
+Date: Wed, 28 Sep 2022 16:00:10 +0300
+Subject: [PATCH] Rewrite `stackpath_..._test`
+
+---
+ tests/core/go_test/BUILD.bazel                | 83 ++++++++++++++++---
+ tests/core/go_test/README.rst                 | 21 +++++
+ tests/core/go_test/a/stackpath2_test.go       | 39 ---------
+ tests/core/go_test/a/stackpath_subdir_test.go | 30 +++++++
+ tests/core/go_test/stackpath_default_lib.go   |  5 ++
+ tests/core/go_test/stackpath_test.go          | 54 +++++++-----
+ 6 files changed, 160 insertions(+), 72 deletions(-)
+ delete mode 100644 tests/core/go_test/a/stackpath2_test.go
+ create mode 100644 tests/core/go_test/a/stackpath_subdir_test.go
+ create mode 100644 tests/core/go_test/stackpath_default_lib.go
+
+diff --git a/tests/core/go_test/BUILD.bazel b/tests/core/go_test/BUILD.bazel
+index 254d3dd6..d6a13745 100644
+--- a/tests/core/go_test/BUILD.bazel
++++ b/tests/core/go_test/BUILD.bazel
+@@ -255,38 +255,95 @@ go_bazel_test(
+ )
+ 
+ go_library(
+-    name = "stackpath_lib",
++    name = "stackpath_default_lib",
++    srcs = ["stackpath_default_lib.go"],
++    importpath = "stackpath_default_lib",
++)
++
++go_library(
++    name = "stackpath_foo_lib",
+     srcs = ["stackpath_lib.go"],
+     importpath = "stackpath_lib",
+     stackpath = "foo",
+ )
+ 
++go_library(
++    name = "stackpath_embed_foo_lib",
++    embed = [":stackpath_foo_lib"],
++)
++
++go_library(
++    name = "stackpath_embed_bar_lib",
++    embed = [":stackpath_foo_lib"],
++    stackpath = "bar",
++)
++
++go_library(
++    name = "stackpath_foo_baz_test_lib",
++    srcs = [
++        "a/stackpath_subdir_test.go",
++        "stackpath_test.go",
++    ],
++    importpath = "stackpath_test",
++    stackpath = "baz",
++    deps = [
++        ":stackpath_default_lib",
++        ":stackpath_foo_lib",
++    ],
++)
++
+ go_test(
+-    name = "stackpath_test",
++    name = "stackpath_default_test",
+     srcs = [
+-        "a/stackpath2_test.go",
++        "a/stackpath_subdir_test.go",
+         "stackpath_test.go",
+     ],
+-    stackpath = "bar",
++    x_defs = {
++        "expectedLibFile": "foo/stackpath_lib.go",
++        "expectedTestFile": "tests/core/go_test/stackpath_test.go",
++        "expectedSubdirTestFile": "tests/core/go_test/a/stackpath_subdir_test.go",
++    },
+     deps = [
+-        ":stackpath_lib",
++        ":stackpath_default_lib",
++        ":stackpath_foo_lib",
+     ],
+ )
+ 
+-go_library(
+-    name = "stackpath_test_lib",
++go_test(
++    name = "stackpath_foo_qux_test",
+     srcs = [
+-        "a/stackpath2_test.go",
++        "a/stackpath_subdir_test.go",
+         "stackpath_test.go",
+     ],
+-    importpath = "stackpath_test",
+-    stackpath = "bar",
++    stackpath = "qux",
++    x_defs = {
++        "expectedLibFile": "foo/stackpath_lib.go",
++        "expectedTestFile": "qux/stackpath_test.go",
++        "expectedSubdirTestFile": "qux/stackpath_subdir_test.go",
++    },
+     deps = [
+-        ":stackpath_lib",
++        ":stackpath_default_lib",
++        ":stackpath_foo_lib",
+     ],
+ )
+ 
+ go_test(
+-    name = "stackpath_embed_test",
+-    embed = [":stackpath_test_lib"],
++    name = "stackpath_embed_foo_baz_test",
++    embed = [":stackpath_foo_baz_test_lib"],
++    x_defs = {
++        "expectedLibFile": "foo/stackpath_lib.go",
++        "expectedTestFile": "baz/stackpath_test.go",
++        "expectedSubdirTestFile": "baz/stackpath_subdir_test.go",
++    },
++)
++
++go_test(
++    name = "stackpath_embed_foo_quux_test",
++    embed = [":stackpath_foo_baz_test_lib"],
++    stackpath = "quux",
++    x_defs = {
++        "expectedLibFile": "foo/stackpath_lib.go",
++        "expectedTestFile": "quux/stackpath_test.go",
++        "expectedSubdirTestFile": "quux/stackpath_subdir_test.go",
++    },
+ )
+diff --git a/tests/core/go_test/README.rst b/tests/core/go_test/README.rst
+index 176cf196..beb56715 100644
+--- a/tests/core/go_test/README.rst
++++ b/tests/core/go_test/README.rst
+@@ -124,3 +124,24 @@ fuzz_test
+ ---------
+ 
+ Checks that a ``go_test`` with a fuzz target builds correctly.
++
++stackpath_default_test
++---------
++
++Check that packages have default stacktrace paths.
++
++stackpath_foo_qux_test
++---------
++
++Check that packages have stacktrace path assigned by ``stackpath`` directly in ``go_test``/``go_library`` rule.
++
++stackpath_embed_foo_baz_test
++---------
++
++Check that packages have stacktrace path assigned by ``stackpath`` in embedded ``go_library`` rule.
++
++stackpath_embed_foo_quux_test
++---------
++
++Check that if ``stackpath`` is defined directly in ``go_test``/``go_library`` and in embedded ``go_library`` rule, then
++the directly defined ``stackpath`` wins.
+diff --git a/tests/core/go_test/a/stackpath2_test.go b/tests/core/go_test/a/stackpath2_test.go
+deleted file mode 100644
+index c8ae9de0..00000000
+--- a/tests/core/go_test/a/stackpath2_test.go
++++ /dev/null
+@@ -1,39 +0,0 @@
+-package stackpath
+-
+-import (
+-	"runtime/debug"
+-	"stackpath_lib"
+-	"strings"
+-	"testing"
+-)
+-
+-func TestStackPath2(t *testing.T) {
+-	stack := stackpath_lib.Wrap(func() string {
+-		return string(debug.Stack())
+-	})
+-	// Stack example:
+-	//
+-	//	goroutine 6 [running]:
+-	//	runtime/debug.Stack()
+-	//		GOROOT/src/runtime/debug/stack.go:24 +0x65
+-	//	tests/core/go_test/stackpath_test.TestStackPath2.func1(...)
+-	//		bar/stackpath2_test.go:12
+-	//	stackpath_lib.Wrap(...)
+-	//		foo/stackpath_lib.go:4
+-	//	tests/core/go_test/stackpath_test.TestStackPath2(0xc00011a680)
+-	//		bar/stackpath2_test.go:11 +0x35
+-	//	testing.tRunner(0xc00011a680, 0x575e48)
+-	//		GOROOT/src/testing/testing.go:1439 +0x102
+-	//	created by testing.(*T).Run
+-	//		GOROOT/src/testing/testing.go:1486 +0x35f
+-
+-
+-	for _, expected := range []string{
+-		"\tbar/stackpath2_test.go:",
+-		"\tfoo/stackpath_lib.go:",
+-	} {
+-		if !strings.Contains(stack, expected) {
+-			t.Fatalf("Stacktrace does not contains substring %q", expected)
+-		}
+-	}
+-}
+diff --git a/tests/core/go_test/a/stackpath_subdir_test.go b/tests/core/go_test/a/stackpath_subdir_test.go
+new file mode 100644
+index 00000000..2bf5fbb0
+--- /dev/null
++++ b/tests/core/go_test/a/stackpath_subdir_test.go
+@@ -0,0 +1,30 @@
++package stackpath
++
++import (
++	"fmt"
++	"runtime/debug"
++	"stackpath_lib"
++	"strings"
++	"testing"
++)
++
++var expectedSubdirTestFile string
++
++func TestStackPathSubdir(t *testing.T) {
++	stack := stackpath_lib.Wrap(func() string {
++		return string(debug.Stack())
++	})
++	for _, expectedFile := range []string{
++		expectedLibFile,
++		expectedSubdirTestFile,
++	} {
++		if expectedFile == "" {
++			t.Fatalf("Unexpected empty value. Looks like x_defs missed.")
++		}
++
++		expectedSubstring := fmt.Sprintf("\n\t%s:", expectedFile)
++		if !strings.Contains(stack, expectedSubstring) {
++			t.Fatalf("Stacktrace does not contains substring %q: %s", expectedSubstring, stack)
++		}
++	}
++}
+diff --git a/tests/core/go_test/stackpath_default_lib.go b/tests/core/go_test/stackpath_default_lib.go
+new file mode 100644
+index 00000000..65da75bd
+--- /dev/null
++++ b/tests/core/go_test/stackpath_default_lib.go
+@@ -0,0 +1,5 @@
++package stackpath_default_lib
++
++func Wrap(cb func() string) string {
++	return cb()
++}
+diff --git a/tests/core/go_test/stackpath_test.go b/tests/core/go_test/stackpath_test.go
+index 4d8868cd..d56aa2a2 100644
+--- a/tests/core/go_test/stackpath_test.go
++++ b/tests/core/go_test/stackpath_test.go
+@@ -1,37 +1,51 @@
+ package stackpath
+ 
+ import (
++	"fmt"
+ 	"runtime/debug"
++	"stackpath_default_lib"
+ 	"stackpath_lib"
+ 	"strings"
+ 	"testing"
+ )
+ 
++var expectedLibFile string
++var expectedTestFile string
++
+ func TestStackPath(t *testing.T) {
+ 	stack := stackpath_lib.Wrap(func() string {
+ 		return string(debug.Stack())
+ 	})
+-	// Stack example:
+-	//
+-	//	goroutine 7 [running]:
+-	//	runtime/debug.Stack()
+-	//		GOROOT/src/runtime/debug/stack.go:24 +0x65
+-	//	tests/core/go_test/stackpath_test.TestStackPath.func1(...)
+-	//		bar/stackpath_test.go:12
+-	//	stackpath_lib.Wrap(...)
+-	//		foo/stackpath_lib.go:4
+-	//	tests/core/go_test/stackpath_test.TestStackPath(0xc00009a9c0)
+-	//		bar/stackpath_test.go:11 +0x35
+-	//	testing.tRunner(0xc00009a9c0, 0x575e50)
+-	//		GOROOT/src/testing/testing.go:1439 +0x102
+-	//	created by testing.(*T).Run
+-	//		GOROOT/src/testing/testing.go:1486 +0x35f
+-	for _, expected := range []string{
+-		"\tbar/stackpath_test.go:",
+-		"\tfoo/stackpath_lib.go:",
++	for _, expectedFile := range []string{
++		expectedLibFile,
++		expectedTestFile,
++	} {
++		if expectedFile == "" {
++			t.Fatalf("Unexpected empty value. Looks like x_defs missed.")
++		}
++
++		expectedSubstring := fmt.Sprintf("\n\t%s:", expectedFile)
++		if !strings.Contains(stack, expectedSubstring) {
++			t.Fatalf("Stacktrace does not contains substring %q: %s", expectedSubstring, stack)
++		}
++	}
++}
++
++func TestStackDefaultPath(t *testing.T) {
++	stack := stackpath_default_lib.Wrap(func() string {
++		return string(debug.Stack())
++	})
++	for _, expectedFile := range []string{
++		"tests/core/go_test/stackpath_default_lib.go",
++		expectedTestFile,
+ 	} {
+-		if !strings.Contains(stack, expected) {
+-			t.Fatalf("Stacktrace does not contains substring %q", expected)
++		if expectedFile == "" {
++			t.Fatalf("Unexpected empty value. Looks like x_defs missed.")
++		}
++
++		expectedSubstring := fmt.Sprintf("\n\t%s:", expectedFile)
++		if !strings.Contains(stack, expectedSubstring) {
++			t.Fatalf("Stacktrace does not contains substring %q: %s", expectedSubstring, stack)
+ 		}
+ 	}
+ }

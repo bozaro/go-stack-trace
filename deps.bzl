@@ -5,6 +5,7 @@ def go_dependencies():
         name = "com_github_masterminds_cookoo",
         importpath = "github.com/Masterminds/cookoo",
         sum = "h1:zwplWkfGEd4NxiL0iZHh5Jh1o25SUJTKWLfv2FkXh6o=",
+        stackpath = "go/pkg/mod/github.com/!masterminds/cookoo@v1.3.0",
         version = "v1.3.0",
     )
     go_repository(
@@ -12,4 +13,5 @@ def go_dependencies():
         importpath = "github.com/pkg/errors",
         sum = "h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=",
         version = "v0.9.1",
+        stackpath = "go/pkg/mod/github.com/pkg/errors@v0.9.1",
     )
