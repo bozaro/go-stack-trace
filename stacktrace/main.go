@@ -2,20 +2,32 @@ package main
 
 import (
 	"fmt"
-	"os"
 
-	"github.com/mkideal/cli"
+	"github.com/Masterminds/cookoo"
 	"github.com/pkg/errors"
 )
 
-type argT struct {
-	Name string `cli:"name" dft:"world" usage:"tell me your name"`
+func main() {
+	// Build a new Cookoo app.
+	registry, router, context := cookoo.Cookoo()
+	// Fill the registry.
+	registry.AddRoutes(
+		cookoo.Route{
+			Name: "TEST",
+			Help: "A test route",
+			Does: cookoo.Tasks{
+				cookoo.Cmd{
+					Name: "hi",
+					Fn:   HelloWorld,
+				},
+			},
+		},
+	)
+	// Execute the route.
+	router.HandleRequest("TEST", context, false)
 }
 
-func main() {
-	os.Exit(cli.Run(new(argT), func(ctx *cli.Context) error {
-		argv := ctx.Argv().(*argT)
-		fmt.Printf("%+v\n", errors.WithStack(errors.New(fmt.Sprintf("Hello, %s!\n", argv.Name))))
-		return nil
-	}))
+func HelloWorld(cxt cookoo.Context, params *cookoo.Params) (interface{}, cookoo.Interrupt) {
+	fmt.Printf("%+v\n", errors.New("Hello World"))
+	return true, nil
 }
